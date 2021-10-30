@@ -92,6 +92,18 @@ func (p *KVClerk) MGet(keys []uint64) [][]byte {
 	return vals
 }
 
+func (p *KVClerk) Wait(key uint64, value []byte) {
+	ck := p.getSeqClerk()
+	ck.Wait(key, value)
+	p.putSeqClerk(ck)
+}
+
+func (p *KVClerk) PutAndSignal(key uint64, value []byte) {
+	ck := p.getSeqClerk()
+	ck.PutAndSignal(key, value)
+	p.putSeqClerk(ck)
+}
+
 func MakeKVClerk(coord HostName, cm *connman.ConnMan) *KVClerk {
 	p := new(KVClerk)
 	p.mu = new(sync.Mutex)

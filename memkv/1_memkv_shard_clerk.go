@@ -95,6 +95,36 @@ func (ck *KVShardClerk) MoveShard(sid uint64, dst HostName) {
 	ck.c.CallAtLeastOnce(ck.host, KV_MOV_SHARD, encodeMoveShardRequest(args), rawRep, 100/*ms*/)
 }
 
+func (ck *KVShardClerk) Wait(key uint64, value []byte) ErrorType {
+	args := new(WaitRequest)
+	args.CID = ck.cid
+	args.Seq = ck.seq
+	args.Key = key
+	args.Value = value
+	// Overflowing a 64bit counter will take a while, assume it dos not happen
+	ck.seq = std.SumAssumeNoOverflow(ck.seq, 1)
+
+	rawRep := new([]byte)
+	ck.c.CallAtLeastOnce(ck.host, KV_WAIT, EncodeWaitRequest(args), rawRep, 100/*ms*/)
+	rep := DecodeWaitReply(*rawRep)
+	return rep.Err
+}
+
+func (ck *KVShardClerk) PutAndSignal(key uint64, value []byte) ErrorType {
+	args := new(PutRequest)
+	args.CID = ck.cid
+	args.Seq = ck.seq
+	args.Key = key
+	args.Value = value
+	// Overflowing a 64bit counter will take a while, assume it dos not happen
+	ck.seq = std.SumAssumeNoOverflow(ck.seq, 1)
+
+	rawRep := new([]byte)
+	ck.c.CallAtLeastOnce(ck.host, KV_PUT_AND_SIGNAL, EncodePutRequest(args), rawRep, 100/*ms*/)
+	rep := DecodePutReply(*rawRep)
+	return rep.Err
+}
+
 // The coordinator, and the main clerk, need to talk to a bunch of shards.
 type ShardClerkSet struct {
 	cls map[HostName]*KVShardClerk
