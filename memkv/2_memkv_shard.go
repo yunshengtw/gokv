@@ -21,6 +21,7 @@ type KVShardServer struct {
 	kvss  []KvMap // \box(size=NSHARDS)
 	peers map[HostName]*KVShardClerk // FIXME use ShardClerkSet, maybe?
 	cm *connman.ConnMan
+	conds map[uint64]*sync.Cond
 }
 
 type PutArgs struct {
@@ -167,6 +168,65 @@ func (s *KVShardServer) MoveShardRPC(args *MoveShardRequest) {
 	s.mu.Unlock()
 }
 
+func (s *KVShardServer) wait_inner(args *WaitRequest, reply *WaitReply) {
+	sid := shardOf(args.Key)
+
+	if s.shardMap[sid] == true {
+		reply.Err = ENone
+		m := s.kvss[sid]
+		equal := std.BytesEqual(args.Value, m[args.Key])
+		if !equal {
+			cond, hasCond := s.conds[args.Key]
+			if hasCond {
+				cond.Wait()
+			} else {
+				condNew := sync.NewCond(s.mu)
+				s.conds[args.Key] = condNew
+				condNew.Wait()
+			}
+		}
+	} else {
+		reply.Err = EDontHaveShard
+	}
+}
+
+func (s *KVShardServer) WaitRPC(args *WaitRequest, reply *WaitReply) {
+	s.mu.Lock()
+	s.wait_inner(args, reply)
+	s.mu.Unlock()
+}
+
+func (s *KVShardServer) put_and_broadcast_inner(args *PutRequest, reply *PutReply) {
+	last, ok := s.lastSeq[args.CID]
+	seq := args.Seq
+	if ok && seq <= last {
+		reply.Err = s.lastReply[args.CID].Err
+		return
+	}
+	s.lastSeq[args.CID] = args.Seq
+
+	sid := shardOf(args.Key)
+
+	if s.shardMap[sid] == true {
+		s.kvss[sid][args.Key] = args.Value // give ownership of the slice to the server
+		cond, hasCond := s.conds[args.Key]
+		if hasCond {
+			cond.Broadcast()
+		}
+		reply.Err = ENone
+	} else {
+		reply.Err = EDontHaveShard
+	}
+
+	s.lastReply[args.CID] = ShardReply{Err: reply.Err}
+}
+
+func (s *KVShardServer) PutAndBroadcastRPC(args *PutRequest, reply *PutReply) {
+	s.mu.Lock()
+	s.put_and_broadcast_inner(args, reply)
+	s.mu.Unlock()
+}
+
 func MakeKVShardServer(is_init bool) *KVShardServer {
 	srv := new(KVShardServer)
 	srv.mu = new(sync.Mutex)
@@ -176,6 +236,7 @@ func MakeKVShardServer(is_init bool) *KVShardServer {
 	srv.kvss = make([]KvMap, NSHARD)
 	srv.peers = make(map[HostName]*KVShardClerk)
 	srv.cm = connman.MakeConnMan()
+	srv.conds = make(map[uint64]*sync.Cond)
 	for i := uint64(0); i < NSHARD; i++ {
 		srv.shardMap[i] = is_init
 		if is_init {
@@ -230,6 +291,18 @@ func (mkv *KVShardServer) Start(host HostName) {
 	handlers[KV_MOV_SHARD] = func(rawReq []byte, rawReply *[]byte) {
 		mkv.MoveShardRPC(decodeMoveShardRequest(rawReq))
 		*rawReply = make([]byte, 0)
+	}
+
+	handlers[KV_WAIT] = func(rawReq []byte, rawReply *[]byte) {
+		rep := new(WaitReply)
+		mkv.WaitRPC(DecodeWaitRequest(rawReq), rep)
+		*rawReply = EncodeWaitReply(rep)
+	}
+
+	handlers[KV_PUT_AND_BROADCAST] = func(rawReq []byte, rawReply *[]byte) {
+		rep := new(PutReply)
+		mkv.PutAndBroadcastRPC(DecodePutRequest(rawReq), rep)
+		*rawReply = EncodePutReply(rep)
 	}
 	s := rpc.MakeRPCServer(handlers)
 	s.Serve(host, 1)

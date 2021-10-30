@@ -25,6 +25,8 @@ const KV_GET = uint64(2)
 const KV_CONDITIONAL_PUT = uint64(3)
 const KV_INS_SHARD = uint64(4)
 const KV_MOV_SHARD = uint64(5)
+const KV_WAIT = uint64(6)
+const KV_PUT_AND_BROADCAST = uint64(7)
 
 func shardOf(key uint64) uint64 {
 	return key % NSHARD
@@ -288,4 +290,52 @@ func encodeShardMap(shardMap *[]HostName) []byte {
 func decodeShardMap(raw []byte) []HostName {
 	d := marshal.NewDec(raw)
 	return d.GetInts(NSHARD)
+}
+
+type WaitRequest struct {
+	CID   uint64
+	Seq   uint64
+	Key   uint64
+	Value []byte
+}
+
+type WaitReply struct {
+	Err ErrorType
+}
+
+func EncodeWaitRequest(args *WaitRequest) []byte {
+	// assume no overflow (args.Value would have to be almost 2^64 bytes large...)
+	num_bytes := std.SumAssumeNoOverflow(8 + 8 + 8 + 8, uint64(len(args.Value))) // CID + Seq + key + value-len + value
+	e := marshal.NewEnc(num_bytes)
+	e.PutInt(args.CID)
+	e.PutInt(args.Seq)
+	e.PutInt(args.Key)
+	e.PutInt(uint64(len(args.Value)))
+	e.PutBytes(args.Value)
+
+	return e.Finish()
+}
+
+func DecodeWaitRequest(reqData []byte) *WaitRequest {
+	req := new(WaitRequest)
+	d := marshal.NewDec(reqData)
+	req.CID = d.GetInt()
+	req.Seq = d.GetInt()
+	req.Key = d.GetInt()
+	req.Value = d.GetBytes(d.GetInt())
+
+	return req
+}
+
+func EncodeWaitReply(reply *WaitReply) []byte {
+	e := marshal.NewEnc(8)
+	e.PutInt(reply.Err)
+	return e.Finish()
+}
+
+func DecodeWaitReply(replyData []byte) *WaitReply {
+	reply := new(WaitReply)
+	d := marshal.NewDec(replyData)
+	reply.Err = d.GetInt()
+	return reply
 }

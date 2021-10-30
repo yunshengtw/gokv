@@ -87,6 +87,40 @@ func (ck *SeqKVClerk) Add(host HostName) {
 	ck.coordCk.AddShardServer(host)
 }
 
+func (ck *SeqKVClerk) Wait(key uint64, value []byte) {
+	for {
+		sid := shardOf(key)
+		shardServer := ck.shardMap[sid]
+
+		shardCk := ck.shardClerks.GetClerk(shardServer)
+		err := shardCk.Wait(key, value)
+
+		if err == ENone {
+			break
+		}
+		ck.shardMap = ck.coordCk.GetShardMap()
+		continue
+	}
+	return
+}
+
+func (ck *SeqKVClerk) PutAndBroadcast(key uint64, value []byte) {
+	for {
+		sid := shardOf(key)
+		shardServer := ck.shardMap[sid]
+
+		shardCk := ck.shardClerks.GetClerk(shardServer)
+		err := shardCk.PutAndBroadcast(key, value)
+
+		if err == ENone {
+			break
+		}
+		ck.shardMap = ck.coordCk.GetShardMap()
+		continue
+	}
+	return
+}
+
 func MakeSeqKVClerk(coord HostName, cm *connman.ConnMan) *SeqKVClerk {
 	cck := new(KVCoordClerk)
 	ck := new(SeqKVClerk)
